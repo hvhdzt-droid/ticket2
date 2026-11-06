@@ -8,104 +8,16 @@ const {
 } = require("discord.js");
 
 const fs = require("fs");
+const path = require("path");
 
-// =============================
-// MAIN SYSTEM CONFIG
-// =============================
+// =====================================
+// MAIN SYSTEM
+// =====================================
 
 const TOKEN = process.env.TOKEN;
 
 const PREFIX = ""; // بدون بادئة
-
-const CONFIG = {
-  name: "MAIN SYSTEM",
-  color: 0x808080,
-
-  // ضع آيدي روم اللوق
-  logChannel: "PUT_LOG_CHANNEL_ID",
-
-  // روم الترحيب والمغادرة
-  welcomeChannel: "PUT_WELCOME_CHANNEL_ID",
-
-  // رسالة الترحيب
-  welcomeMessage: "أهلًا {user} نورت سيرفر {server}!",
-
-  // رسالة المغادرة
-  leaveMessage: "{username} غادر السيرفر.",
-
-  // حماية السبام
-  spamLimit: 5,
-  spamTime: 5000,
-
-  // حماية الرومات والرتب
-  antiNuke: true,
-
-  // الرتبة التلقائية عند الدخول
-  autoRole: "PUT_ROLE_ID",
-
-  // رتب المستويات: المستوى ثم آيدي الرتبة
-  levelRoles: [
-    { level: 5, role: "ROLE_ID_1" },
-    { level: 10, role: "ROLE_ID_2" },
-    { level: 20, role: "ROLE_ID_3" }
-  ],
-
-  // رتب التفاعل: عدد الرسائل ثم آيدي الرتبة
-  activityRoles: [
-    { messages: 100, role: "ROLE_ID_4" },
-    { messages: 500, role: "ROLE_ID_5" }
-  ],
-
-  // الأشخاص المسموح لهم باستخدام الحماية
-  trustedUsers: []
-};
-
-// =============================
-// DATABASE
-// =============================
-
-if (!fs.existsSync("./data")) {
-  fs.mkdirSync("./data");
-}
-
-function loadDB(file, fallback = {}) {
-  try {
-    if (!fs.existsSync(file)) {
-      fs.writeFileSync(file, JSON.stringify(fallback, null, 2));
-      return fallback;
-    }
-
-    return JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch {
-    return fallback;
-  }
-}
-
-function saveDB(file, data) {
-  fs.writeFileSync(file, JSON.stringify(data, null, 2));
-}
-
-let levels = loadDB("./data/levels.json");
-let warnings = loadDB("./data/warnings.json");
-let spam = new Map();
-
-function getMemberData(memberId, guildId) {
-  if (!levels[guildId]) levels[guildId] = {};
-
-  if (!levels[guildId][memberId]) {
-    levels[guildId][memberId] = {
-      xp: 0,
-      level: 0,
-      messages: 0
-    };
-  }
-
-  return levels[guildId][memberId];
-}
-
-// =============================
-// CLIENT
-// =============================
+const COLOR = 0xFFFFFF;
 
 const client = new Client({
   intents: [
@@ -113,8 +25,7 @@ const client = new Client({
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildModeration,
-    GatewayIntentBits.GuildMessageReactions
+    GatewayIntentBits.GuildModeration
   ],
   partials: [
     Partials.Message,
@@ -123,389 +34,481 @@ const client = new Client({
   ]
 });
 
-// =============================
-// EMBED
-// =============================
+// =====================================
+// DATABASE
+// =====================================
 
-function makeEmbed(title, description) {
+const folder = "./data";
+
+if (!fs.existsSync(folder)) {
+  fs.mkdirSync(folder);
+}
+
+function readDB(name, fallback = {}) {
+  const file = path.join(folder, name);
+
+  try {
+    if (!fs.existsSync(file)) {
+      fs.writeFileSync(file, JSON.stringify(fallback, null, 2));
+      return fallback;
+    }
+
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (error) {
+    console.error("Database error:", error);
+    return fallback;
+  }
+}
+
+function saveDB(name, data) {
+  fs.writeFileSync(
+    path.join(folder, name),
+    JSON.stringify(data, null, 2)
+  );
+}
+
+let settings = readDB("settings.json");
+let levels = readDB("levels.json");
+let warnings = readDB("warnings.json");
+
+function getSettings(guildId) {
+  if (!settings[guildId]) {
+    settings[guildId] = {
+      logChannel: null,
+      welcomeChannel: null,
+      leaveChannel: null,
+      welcomeMessage: "أهلًا {user} نورت سيرفر {server}!",
+      leaveMessage: "{username} غادر السيرفر.",
+      autoRole: null,
+      levelRoles: [],
+      activityRoles: [],
+      aliases: {},
+      trusted: [],
+      antiNuke: true,
+      antiSpam: true
+    };
+
+    saveDB("settings.json", settings);
+  }
+
+  return settings[guildId];
+}
+
+function getData(guildId, userId) {
+  if (!levels[guildId]) levels[guildId] = {};
+
+  if (!levels[guildId][userId]) {
+    levels[guildId][userId] = {
+      xp: 0,
+      level: 0,
+      messages: 0
+    };
+  }
+
+  return levels[guildId][userId];
+}
+
+function requiredXP(level) {
+  return 100 + level * 50;
+}
+
+// =====================================
+// EMBEDS
+// =====================================
+
+function embed(title, description) {
   return new EmbedBuilder()
-    .setColor(CONFIG.color)
+    .setColor(COLOR)
     .setTitle(title)
     .setDescription(description)
     .setTimestamp()
     .setFooter({ text: "MAIN SYSTEM" });
 }
 
-// =============================
-// LOG SYSTEM
-// =============================
+// =====================================
+// LOG
+// =====================================
 
-async function sendLog(guild, title, description) {
-  try {
-    const channel = guild.channels.cache.get(CONFIG.logChannel);
+async function log(guild, title, description) {
+  const config = getSettings(guild.id);
 
-    if (!channel || !channel.isTextBased()) return;
+  if (!config.logChannel) return;
 
-    await channel.send({
-      embeds: [makeEmbed(title, description)]
-    });
-  } catch (err) {
-    console.log("Log Error:", err.message);
-  }
+  const channel = guild.channels.cache.get(config.logChannel);
+
+  if (!channel || !channel.isTextBased()) return;
+
+  await channel.send({
+    embeds: [embed(title, description)]
+  }).catch(() => {});
 }
 
-// =============================
-// LEVEL SYSTEM
-// =============================
+// =====================================
+// ADMIN CHECK
+// =====================================
 
-function requiredXP(level) {
-  return 100 + level * 50;
+function isAdmin(message) {
+  return message.member.permissions.has(
+    PermissionsBitField.Flags.Administrator
+  );
 }
 
-async function giveLevelRoles(member, level, messages) {
-  try {
-    for (const item of CONFIG.levelRoles) {
-      if (
-        level >= item.level &&
-        item.role &&
-        !item.role.startsWith("ROLE_ID")
-      ) {
-        const role = member.guild.roles.cache.get(item.role);
+function mentionMember(message) {
+  return message.mentions.members.first();
+}
 
-        if (role && !member.roles.cache.has(role.id)) {
-          await member.roles.add(role).catch(() => {});
-        }
-      }
+function mentionRole(message) {
+  return message.mentions.roles.first();
+}
+
+// =====================================
+// COMMAND NAMES
+// =====================================
+
+const commands = [
+  "مساعدة",
+  "توب",
+  "رتبتي",
+  "حظر",
+  "طرد",
+  "اسكات",
+  "فكاسكات",
+  "تحذير",
+  "تحذيراته",
+  "مسح",
+  "عضو",
+  "سيرفر",
+  "صورة",
+  "اعلان",
+  "تغيير",
+  "استرجاع",
+  "لوق",
+  "ترحيب",
+  "مغادرة",
+  "رسالة_ترحيب",
+  "رسالة_مغادرة",
+  "رتبة_تلقائية",
+  "رتبة_مستوى",
+  "رتبة_تفاعل",
+  "موثوق",
+  "الغاء_موثوق"
+];
+
+function resolveCommand(input, config) {
+  for (const original of commands) {
+    if (config.aliases[original] === input) {
+      return original;
     }
-
-    for (const item of CONFIG.activityRoles) {
-      if (
-        messages >= item.messages &&
-        item.role &&
-        !item.role.startsWith("ROLE_ID")
-      ) {
-        const role = member.guild.roles.cache.get(item.role);
-
-        if (role && !member.roles.cache.has(role.id)) {
-          await member.roles.add(role).catch(() => {});
-        }
-      }
-    }
-  } catch (err) {
-    console.log("Role Error:", err.message);
   }
+
+  return commands.includes(input) ? input : null;
 }
 
-async function addXP(message) {
-  const member = message.member;
+function commandName(original, config) {
+  return config.aliases[original] || original;
+}
 
-  if (!member || member.user.bot) return;
+// =====================================
+// XP AND LEVEL SYSTEM
+// =====================================
 
-  const data = getMemberData(member.id, message.guild.id);
+const xpCooldown = new Map();
+const spamMessages = new Map();
+
+async function giveXP(message) {
+  const key = `${message.guild.id}-${message.author.id}`;
+  const now = Date.now();
+
+  if (xpCooldown.has(key) && now - xpCooldown.get(key) < 60000) {
+    return;
+  }
+
+  xpCooldown.set(key, now);
+
+  const data = getData(message.guild.id, message.author.id);
 
   data.messages++;
   data.xp += Math.floor(Math.random() * 11) + 10;
 
-  const needed = requiredXP(data.level);
-
-  if (data.xp >= needed) {
-    data.xp -= needed;
+  while (data.xp >= requiredXP(data.level)) {
+    data.xp -= requiredXP(data.level);
     data.level++;
 
     await message.channel.send({
       embeds: [
-        makeEmbed(
+        embed(
           "LEVEL UP!",
-          `مبروك ${member}!\nوصلت إلى المستوى **${data.level}**`
+          `مبروك ${message.author}!\nوصلت إلى المستوى **${data.level}**`
         )
       ]
-    });
+    }).catch(() => {});
 
-    await giveLevelRoles(member, data.level, data.messages);
+    await checkRoles(message.member);
   }
 
-  await giveLevelRoles(member, data.level, data.messages);
+  await checkRoles(message.member);
 
-  saveDB("./data/levels.json", levels);
+  saveDB("levels.json", levels);
 }
 
-// =============================
-// WELCOME / LEAVE
-// =============================
+async function checkRoles(member) {
+  const config = getSettings(member.guild.id);
+  const data = getData(member.guild.id, member.id);
+
+  for (const item of config.levelRoles) {
+    if (data.level >= item.level) {
+      const role = member.guild.roles.cache.get(item.role);
+
+      if (role && !member.roles.cache.has(role.id)) {
+        await member.roles.add(role).catch(() => {});
+      }
+    }
+  }
+
+  for (const item of config.activityRoles) {
+    if (data.messages >= item.messages) {
+      const role = member.guild.roles.cache.get(item.role);
+
+      if (role && !member.roles.cache.has(role.id)) {
+        await member.roles.add(role).catch(() => {});
+      }
+    }
+  }
+}
+
+// =====================================
+// AUTO SPAM PROTECTION
+// =====================================
+
+async function checkSpam(message) {
+  const config = getSettings(message.guild.id);
+
+  if (!config.antiSpam) return false;
+
+  const key = `${message.guild.id}-${message.author.id}`;
+  const now = Date.now();
+
+  const times = spamMessages.get(key) || [];
+
+  const recent = times.filter(time => now - time < 5000);
+  recent.push(now);
+
+  spamMessages.set(key, recent);
+
+  if (recent.length < 5) return false;
+
+  spamMessages.delete(key);
+
+  if (message.member.moderatable) {
+    await message.member.timeout(
+      60000,
+      "MAIN SYSTEM - Anti Spam"
+    ).catch(() => {});
+  }
+
+  await message.channel.send({
+    embeds: [
+      embed("ANTI SPAM", `تم رصد السبام من ${message.author}.`)
+    ]
+  }).catch(() => {});
+
+  await log(
+    message.guild,
+    "حماية السبام",
+    `تم رصد رسائل متكررة من ${message.author.tag}`
+  );
+
+  return true;
+}
+
+// =====================================
+// WELCOME AND LEAVE
+// =====================================
 
 client.on("guildMemberAdd", async member => {
-  try {
+  const config = getSettings(member.guild.id);
+
+  if (config.welcomeChannel) {
     const channel = member.guild.channels.cache.get(
-      CONFIG.welcomeChannel
+      config.welcomeChannel
     );
 
     if (channel) {
-      const text = CONFIG.welcomeMessage
+      const text = config.welcomeMessage
         .replaceAll("{user}", member.toString())
         .replaceAll("{server}", member.guild.name)
         .replaceAll("{username}", member.user.username);
 
       await channel.send({
-        embeds: [makeEmbed("WELCOME", text)]
-      });
+        embeds: [embed("WELCOME", text)]
+      }).catch(() => {});
     }
-
-    if (
-      CONFIG.autoRole &&
-      !CONFIG.autoRole.startsWith("PUT_")
-    ) {
-      const role = member.guild.roles.cache.get(CONFIG.autoRole);
-
-      if (role) await member.roles.add(role).catch(() => {});
-    }
-
-    await sendLog(
-      member.guild,
-      "دخول عضو",
-      `${member} دخل السيرفر.`
-    );
-  } catch (err) {
-    console.log(err);
   }
+
+  if (config.autoRole) {
+    const role = member.guild.roles.cache.get(config.autoRole);
+
+    if (role) {
+      await member.roles.add(role).catch(() => {});
+    }
+  }
+
+  await log(
+    member.guild,
+    "دخول عضو",
+    `${member.user.tag} دخل السيرفر.`
+  );
 });
 
 client.on("guildMemberRemove", async member => {
-  const channel = member.guild.channels.cache.get(
-    CONFIG.welcomeChannel
-  );
+  const config = getSettings(member.guild.id);
 
-  if (channel) {
-    const text = CONFIG.leaveMessage
-      .replaceAll("{username}", member.user.username)
-      .replaceAll("{server}", member.guild.name);
+  if (config.leaveChannel) {
+    const channel = member.guild.channels.cache.get(
+      config.leaveChannel
+    );
 
-    await channel.send({
-      embeds: [makeEmbed("GOODBYE", text)]
-    }).catch(() => {});
+    if (channel) {
+      const text = config.leaveMessage
+        .replaceAll("{username}", member.user.username)
+        .replaceAll("{server}", member.guild.name);
+
+      await channel.send({
+        embeds: [embed("GOODBYE", text)]
+      }).catch(() => {});
+    }
   }
 
-  await sendLog(
+  await log(
     member.guild,
     "خروج عضو",
-    `غادر ${member.user.tag} السيرفر.`
+    `${member.user.tag} غادر السيرفر.`
   );
 });
 
-// =============================
-// MESSAGE EDIT / DELETE LOGS
-// =============================
+// =====================================
+// MESSAGE LOGS
+// =====================================
 
 client.on("messageDelete", async message => {
-  if (!message.guild || message.author?.bot) return;
+  if (!message.guild) return;
 
-  await sendLog(
+  await log(
     message.guild,
     "حذف رسالة",
-    `**العضو:** ${message.author || "غير معروف"}\n**الروم:** ${message.channel}\n**المحتوى:** ${message.content || "لا يوجد نص"}`
+    `**العضو:** ${message.author?.tag || "غير معروف"}\n**الروم:** ${message.channel}\n**المحتوى:** ${message.content || "لا يوجد نص"}`
   );
 });
 
 client.on("messageUpdate", async (oldMessage, newMessage) => {
-  if (!oldMessage.guild || oldMessage.author?.bot) return;
+  if (!oldMessage.guild) return;
+
+  if (oldMessage.partial) {
+    await oldMessage.fetch().catch(() => {});
+  }
 
   if (oldMessage.content === newMessage.content) return;
 
-  await sendLog(
+  await log(
     oldMessage.guild,
     "تعديل رسالة",
-    `**العضو:** ${oldMessage.author}\n**الروم:** ${oldMessage.channel}\n**قبل:** ${oldMessage.content || "غير معروف"}\n**بعد:** ${newMessage.content || "غير معروف"}`
+    `**العضو:** ${oldMessage.author?.tag || "غير معروف"}\n**الروم:** ${oldMessage.channel}\n**قبل:** ${oldMessage.content || "غير معروف"}\n**بعد:** ${newMessage.content || "غير معروف"}`
   );
 });
 
-// =============================
-// ANTI SPAM
-// =============================
+// =====================================
+// ROLE AND CHANNEL LOGS
+// =====================================
 
-async function antiSpam(message) {
-  const id = message.author.id;
-
-  if (!spam.has(id)) spam.set(id, []);
-
-  const times = spam.get(id);
-
-  const now = Date.now();
-
-  times.push(now);
-
-  const recent = times.filter(
-    time => now - time < CONFIG.spamTime
-  );
-
-  spam.set(id, recent);
-
-  if (recent.length >= CONFIG.spamLimit) {
-    spam.set(id, []);
-
-    await message.member.timeout(
-      60 * 1000,
-      "MAIN SYSTEM Anti Spam"
-    ).catch(() => {});
-
-    await message.channel.send({
-      embeds: [
-        makeEmbed(
-          "ANTI SPAM",
-          `${message.author} تم إسكاتك لمدة دقيقة بسبب السبام.`
-        )
-      ]
-    });
-
-    await sendLog(
-      message.guild,
-      "حماية السبام",
-      `تم رصد سبام من ${message.author}`
-    );
-
-    return true;
+client.on("channelCreate", channel => {
+  if (channel.guild) {
+    log(channel.guild, "إنشاء روم", `تم إنشاء **${channel.name}**`);
   }
+});
 
-  return false;
-}
+client.on("channelDelete", channel => {
+  if (channel.guild) {
+    log(channel.guild, "حذف روم", `تم حذف **${channel.name}**`);
+    checkNuke(channel.guild, AuditLogEvent.ChannelDelete, channel.id, "حذف روم");
+  }
+});
 
-// =============================
+client.on("channelUpdate", (oldChannel, newChannel) => {
+  if (newChannel.guild) {
+    log(newChannel.guild, "تعديل روم", `تم تعديل **${oldChannel.name}**`);
+  }
+});
+
+client.on("roleCreate", role => {
+  log(role.guild, "إنشاء رتبة", `تم إنشاء **${role.name}**`);
+});
+
+client.on("roleDelete", role => {
+  log(role.guild, "حذف رتبة", `تم حذف **${role.name}**`);
+  checkNuke(role.guild, AuditLogEvent.RoleDelete, role.id, "حذف رتبة");
+});
+
+client.on("roleUpdate", (oldRole, newRole) => {
+  log(newRole.guild, "تعديل رتبة", `تم تعديل **${oldRole.name}**`);
+});
+
+// =====================================
 // ANTI NUKE
-// =============================
+// =====================================
 
-async function checkAudit(guild, type, targetId, actionName) {
-  if (!CONFIG.antiNuke) return;
+async function checkNuke(guild, type, targetId, action) {
+  const config = getSettings(guild.id);
+
+  if (!config.antiNuke) return;
 
   try {
+    await new Promise(resolve => setTimeout(resolve, 1200));
+
     const logs = await guild.fetchAuditLogs({
       type,
-      limit: 1
+      limit: 5
     });
 
-    const entry = logs.entries.first();
+    const entry = logs.entries.find(item =>
+      item.target?.id === targetId &&
+      Date.now() - item.createdTimestamp < 15000
+    );
 
     if (!entry || !entry.executor) return;
 
-    if (Date.now() - entry.createdTimestamp > 10000) return;
-
     const executor = entry.executor;
 
-    if (executor.id === client.user.id) return;
-
-    if (CONFIG.trustedUsers.includes(executor.id)) return;
-
-    if (executor.id === guild.ownerId) return;
+    if (
+      executor.id === client.user.id ||
+      executor.id === guild.ownerId ||
+      config.trusted.includes(executor.id)
+    ) return;
 
     const member = await guild.members.fetch(executor.id).catch(() => null);
 
     if (!member) return;
 
-    if (member.permissions.has(PermissionsBitField.Flags.Administrator)) {
-      return;
+    if (member.moderatable) {
+      await member.timeout(
+        10 * 60 * 1000,
+        `MAIN SYSTEM Anti Nuke: ${action}`
+      ).catch(() => {});
     }
 
-    if (targetId && entry.target?.id !== targetId) return;
-
-    await member.roles.set([]).catch(() => {});
-
-    await member.timeout(
-      60 * 60 * 1000,
-      "MAIN SYSTEM Anti Nuke"
-    ).catch(() => {});
-
-    await sendLog(
+    await log(
       guild,
-      "تحذير الحماية",
-      `تم رصد عملية **${actionName}** بواسطة ${executor}.\nتم اتخاذ إجراء حماية على العضو.`
+      "ANTI NUKE",
+      `تم رصد **${action}** بواسطة ${executor.tag}.\nتم تطبيق إجراء الحماية إن سمحت الصلاحيات.`
     );
-  } catch (err) {
-    console.log("AntiNuke:", err.message);
+
+  } catch (error) {
+    console.error("Anti Nuke Error:", error);
   }
 }
 
-client.on("channelDelete", async channel => {
-  await sendLog(
-    channel.guild,
-    "حذف روم",
-    `تم حذف روم: **${channel.name}**`
-  );
-
-  await checkAudit(
-    channel.guild,
-    AuditLogEvent.ChannelDelete,
-    channel.id,
-    "حذف روم"
-  );
-});
-
-client.on("channelCreate", async channel => {
-  await sendLog(
-    channel.guild,
-    "إنشاء روم",
-    `تم إنشاء روم: **${channel.name}**`
-  );
-
-  await checkAudit(
-    channel.guild,
-    AuditLogEvent.ChannelCreate,
-    channel.id,
-    "إنشاء روم"
-  );
-});
-
-client.on("roleDelete", async role => {
-  await sendLog(
-    role.guild,
-    "حذف رتبة",
-    `تم حذف رتبة: **${role.name}**`
-  );
-
-  await checkAudit(
-    role.guild,
-    AuditLogEvent.RoleDelete,
-    role.id,
-    "حذف رتبة"
-  );
-});
-
-client.on("roleCreate", async role => {
-  await sendLog(
-    role.guild,
-    "إنشاء رتبة",
-    `تم إنشاء رتبة: **${role.name}**`
-  );
-
-  await checkAudit(
-    role.guild,
-    AuditLogEvent.RoleCreate,
-    role.id,
-    "إنشاء رتبة"
-  );
-});
-
-// =============================
-// ROLE / CHANNEL UPDATE LOG
-// =============================
-
-client.on("roleUpdate", async (oldRole, newRole) => {
-  await sendLog(
-    newRole.guild,
-    "تعديل رتبة",
-    `تم تعديل الرتبة **${oldRole.name}**`
-  );
-});
-
-client.on("channelUpdate", async (oldChannel, newChannel) => {
-  if (!newChannel.guild) return;
-
-  await sendLog(
-    newChannel.guild,
-    "تعديل روم",
-    `تم تعديل الروم **${oldChannel.name}**`
-  );
-});
-
-// =============================
+// =====================================
 // MEMBER ROLE LOG
-// =============================
+// =====================================
 
 client.on("guildMemberUpdate", async (oldMember, newMember) => {
   const added = newMember.roles.cache.filter(
@@ -517,212 +520,430 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
   );
 
   if (added.size) {
-    await sendLog(
+    await log(
       newMember.guild,
       "إضافة رتبة",
-      `${newMember}\nالرتب: ${added.map(r => r.name).join("، ")}`
+      `${newMember}\n${added.map(role => role.name).join("، ")}`
     );
   }
 
   if (removed.size) {
-    await sendLog(
+    await log(
       newMember.guild,
       "سحب رتبة",
-      `${newMember}\nالرتب: ${removed.map(r => r.name).join("، ")}`
+      `${newMember}\n${removed.map(role => role.name).join("، ")}`
     );
   }
 });
 
-// =============================
-// COMMAND PERMISSIONS
-// =============================
-
-function isAdmin(message) {
-  return message.member.permissions.has(
-    PermissionsBitField.Flags.Administrator
-  );
-}
-
-function getTarget(message) {
-  return message.mentions.members.first();
-}
-
-function parseAmount(args, fallback = 1) {
-  const number = parseInt(args[0], 10);
-  return Number.isInteger(number) ? number : fallback;
-}
-
-// =============================
-// MESSAGE COMMANDS
-// =============================
+// =====================================
+// COMMAND HANDLER
+// =====================================
 
 client.on("messageCreate", async message => {
   if (!message.guild || message.author.bot) return;
 
   try {
-    if (await antiSpam(message)) return;
+    if (await checkSpam(message)) return;
 
-    await addXP(message);
+    await giveXP(message);
 
-    const content = message.content.trim();
-    const args = content.split(/\s+/);
-    const command = args.shift();
+    const config = getSettings(message.guild.id);
+    const parts = message.content.trim().split(/\s+/);
 
-    // -------------------------
+    const input = parts.shift();
+    const command = resolveCommand(input, config);
+
+    if (!command) return;
+
+    const args = parts;
+
+    const adminCommands = [
+      "حظر", "طرد", "اسكات", "فكاسكات",
+      "تحذير", "تحذيراته", "مسح", "اعلان",
+      "تغيير", "استرجاع", "لوق", "ترحيب",
+      "مغادرة", "رسالة_ترحيب", "رسالة_مغادرة",
+      "رتبة_تلقائية", "رتبة_مستوى",
+      "رتبة_تفاعل", "موثوق", "الغاء_موثوق"
+    ];
+
+    if (adminCommands.includes(command) && !isAdmin(message)) {
+      return message.reply("ليس لديك صلاحية Administrator.");
+    }
+
+    const target = mentionMember(message);
+
+    // =================================
+    // HELP
+    // =================================
+
+    if (command === "مساعدة") {
+      const list = commands.map(name =>
+        `\`${commandName(name, config)}\``
+      ).join(" • ");
+
+      return message.reply({
+        embeds: [
+          embed("MAIN SYSTEM COMMANDS", list)
+        ]
+      });
+    }
+
+    // =================================
     // TOP
-    // -------------------------
+    // =================================
 
     if (command === "توب") {
       const data = levels[message.guild.id] || {};
 
       const top = Object.entries(data)
         .sort((a, b) => {
-          const scoreA = a[1].level * 1000 + a[1].xp;
-          const scoreB = b[1].level * 1000 + b[1].xp;
+          const scoreA = a[1].level * 100000 + a[1].xp;
+          const scoreB = b[1].level * 100000 + b[1].xp;
           return scoreB - scoreA;
         })
         .slice(0, 10);
 
-      if (!top.length) {
-        return message.reply("لا توجد بيانات مستويات حتى الآن.");
+      if (!top.length) return message.reply("لا توجد بيانات حتى الآن.");
+
+      const lines = [];
+
+      for (let i = 0; i < top.length; i++) {
+        const [id, info] = top[i];
+        const user = await client.users.fetch(id).catch(() => null);
+
+        lines.push(
+          `**${i + 1}.** ${user ? user.username : id} — Level ${info.level} | XP ${info.xp}`
+        );
       }
 
-      const list = await Promise.all(
-        top.map(async ([id, info], index) => {
-          const user = await client.users.fetch(id).catch(() => null);
-
-          return `**${index + 1}.** ${user ? user.username : id} — Level **${info.level}** | XP **${info.xp}**`;
-        })
-      );
-
       return message.reply({
-        embeds: [
-          makeEmbed("TOP 10 MEMBERS", list.join("\n"))
-        ]
+        embeds: [embed("TOP 10", lines.join("\n"))]
       });
     }
 
-    // -------------------------
+    // =================================
     // MY LEVEL
-    // -------------------------
+    // =================================
 
     if (command === "رتبتي") {
-      const data = getMemberData(
-        message.author.id,
-        message.guild.id
+      const data = getData(message.guild.id, message.author.id);
+
+      return message.reply({
+        embeds: [
+          embed(
+            "رتبتك ومستواك",
+            `**المستوى:** ${data.level}\n**XP:** ${data.xp}/${requiredXP(data.level)}\n**الرسائل:** ${data.messages}`
+          )
+        ]
+      });
+    }
+
+    // =================================
+    // CHANGE COMMAND NAME
+    // =================================
+
+    if (command === "تغيير") {
+      const oldName = args[0];
+      const newName = args[1];
+
+      if (!oldName || !newName) {
+        return message.reply(
+          "الاستخدام: تغيير امر توب متصدرين"
+        );
+      }
+
+      const original = commands.find(name =>
+        name === oldName ||
+        config.aliases[name] === oldName
       );
 
-      return message.reply({
-        embeds: [
-          makeEmbed(
-            "مستواك",
-            `**العضو:** ${message.author}\n**المستوى:** ${data.level}\n**XP:** ${data.xp}/${requiredXP(data.level)}\n**الرسائل:** ${data.messages}`
-          )
-        ]
-      });
+      if (!original) {
+        return message.reply("الأمر القديم غير موجود.");
+      }
+
+      if (
+        commands.includes(newName) ||
+        Object.values(config.aliases).includes(newName) ||
+        newName.includes(" ")
+      ) {
+        return message.reply("الاسم الجديد مستخدم أو غير صالح.");
+      }
+
+      config.aliases[original] = newName;
+      saveDB("settings.json", settings);
+
+      await message.reply(
+        `تم تغيير الأمر **${oldName}** إلى **${newName}** بنجاح.`
+      );
+
+      await log(
+        message.guild,
+        "تغيير اسم أمر",
+        `${message.author.tag}: ${oldName} → ${newName}`
+      );
     }
 
-    // -------------------------
-    // HELP
-    // -------------------------
+    // =================================
+    // RESET COMMAND NAME
+    // =================================
 
-    if (command === "مساعدة") {
-      return message.reply({
-        embeds: [
-          makeEmbed(
-            "MAIN SYSTEM COMMANDS",
-            [
-              "**المستويات**",
-              "`توب`",
-              "`رتبتي`",
-              "",
-              "**الإدارة**",
-              "`حظر @العضو`",
-              "`طرد @العضو`",
-              "`اسكات @العضو 10`",
-              "`فك اسكات @العضو`",
-              "`تحذير @العضو السبب`",
-              "`تحذيراته @العضو`",
-              "`مسح 20`",
-              "",
-              "**معلومات**",
-              "`عضو @العضو`",
-              "`سيرفر`",
-              "`صورة @العضو`",
-              "",
-              "**إضافية**",
-              "`اعلان النص`"
-            ].join("\n")
-          )
-        ]
-      });
+    if (command === "استرجاع") {
+      const oldName = args[0];
+
+      if (!oldName) {
+        return message.reply("الاستخدام: استرجاع امر توب");
+      }
+
+      const original = commands.find(name =>
+        name === oldName ||
+        config.aliases[name] === oldName
+      );
+
+      if (!original || !config.aliases[original]) {
+        return message.reply("الأمر غير مغير أو غير موجود.");
+      }
+
+      delete config.aliases[original];
+
+      saveDB("settings.json", settings);
+
+      return message.reply(
+        `تم استرجاع الأمر إلى **${original}**.`
+      );
     }
 
-    // -------------------------
-    // BAN
-    // -------------------------
+    // =================================
+    // LOG CHANNEL
+    // =================================
 
-    if (command === "حظر") {
-      if (!isAdmin(message)) return message.reply("ليس لديك صلاحية.");
+    if (command === "لوق") {
+      const channel = message.mentions.channels.first();
 
-      const target = getTarget(message);
+      if (!channel) return message.reply("حدد روم اللوق.");
 
+      config.logChannel = channel.id;
+      saveDB("settings.json", settings);
+
+      return message.reply(`تم تحديد روم اللوق: ${channel}`);
+    }
+
+    // =================================
+    // WELCOME CHANNEL
+    // =================================
+
+    if (command === "ترحيب") {
+      const channel = message.mentions.channels.first();
+
+      if (!channel) return message.reply("حدد روم الترحيب.");
+
+      config.welcomeChannel = channel.id;
+      saveDB("settings.json", settings);
+
+      return message.reply(`تم تحديد روم الترحيب: ${channel}`);
+    }
+
+    // =================================
+    // LEAVE CHANNEL
+    // =================================
+
+    if (command === "مغادرة") {
+      const channel = message.mentions.channels.first();
+
+      if (!channel) return message.reply("حدد روم المغادرة.");
+
+      config.leaveChannel = channel.id;
+      saveDB("settings.json", settings);
+
+      return message.reply(`تم تحديد روم المغادرة: ${channel}`);
+    }
+
+    // =================================
+    // WELCOME MESSAGE
+    // =================================
+
+    if (command === "رسالة_ترحيب") {
+      const text = args.join(" ");
+
+      if (!text) return message.reply("اكتب رسالة الترحيب.");
+
+      config.welcomeMessage = text;
+      saveDB("settings.json", settings);
+
+      return message.reply("تم تغيير رسالة الترحيب.");
+    }
+
+    // =================================
+    // LEAVE MESSAGE
+    // =================================
+
+    if (command === "رسالة_مغادرة") {
+      const text = args.join(" ");
+
+      if (!text) return message.reply("اكتب رسالة المغادرة.");
+
+      config.leaveMessage = text;
+      saveDB("settings.json", settings);
+
+      return message.reply("تم تغيير رسالة المغادرة.");
+    }
+
+    // =================================
+    // AUTO ROLE
+    // =================================
+
+    if (command === "رتبة_تلقائية") {
+      const role = mentionRole(message);
+
+      if (!role) return message.reply("حدد الرتبة.");
+
+      config.autoRole = role.id;
+      saveDB("settings.json", settings);
+
+      return message.reply(`تم تحديد الرتبة التلقائية: ${role}`);
+    }
+
+    // =================================
+    // LEVEL ROLE
+    // =================================
+
+    if (command === "رتبة_مستوى") {
+      const level = parseInt(args[0], 10);
+      const role = mentionRole(message);
+
+      if (!Number.isInteger(level) || level < 1 || !role) {
+        return message.reply("الاستخدام: رتبة_مستوى 5 @رتبة");
+      }
+
+      config.levelRoles = config.levelRoles.filter(
+        item => item.level !== level
+      );
+
+      config.levelRoles.push({
+        level,
+        role: role.id
+      });
+
+      saveDB("settings.json", settings);
+
+      return message.reply(
+        `سيحصل العضو على ${role} عند الوصول للمستوى ${level}.`
+      );
+    }
+
+    // =================================
+    // ACTIVITY ROLE
+    // =================================
+
+    if (command === "رتبة_تفاعل") {
+      const amount = parseInt(args[0], 10);
+      const role = mentionRole(message);
+
+      if (!Number.isInteger(amount) || amount < 1 || !role) {
+        return message.reply("الاستخدام: رتبة_تفاعل 100 @رتبة");
+      }
+
+      config.activityRoles = config.activityRoles.filter(
+        item => item.messages !== amount
+      );
+
+      config.activityRoles.push({
+        messages: amount,
+        role: role.id
+      });
+
+      saveDB("settings.json", settings);
+
+      return message.reply(
+        `سيحصل العضو على ${role} بعد ${amount} رسالة.`
+      );
+    }
+
+    // =================================
+    // TRUSTED USERS
+    // =================================
+
+    if (command === "موثوق") {
       if (!target) return message.reply("حدد العضو.");
 
-      if (!target.bannable) return message.reply("لا أستطيع حظر هذا العضو.");
+      if (!config.trusted.includes(target.id)) {
+        config.trusted.push(target.id);
+      }
+
+      saveDB("settings.json", settings);
+
+      return message.reply(`تم إضافة ${target} لقائمة الموثوقين.`);
+    }
+
+    if (command === "الغاء_موثوق") {
+      if (!target) return message.reply("حدد العضو.");
+
+      config.trusted = config.trusted.filter(
+        id => id !== target.id
+      );
+
+      saveDB("settings.json", settings);
+
+      return message.reply(`تم إزالة ${target} من قائمة الموثوقين.`);
+    }
+
+    // =================================
+    // BAN
+    // =================================
+
+    if (command === "حظر") {
+      if (!target) return message.reply("حدد العضو.");
+
+      if (!target.bannable) {
+        return message.reply("لا أستطيع حظر هذا العضو.");
+      }
 
       await target.ban({
-        reason: args.slice(1).join(" ") || "MAIN SYSTEM"
+        reason: args.filter(a => !a.startsWith("<@")).join(" ") || "MAIN SYSTEM"
       });
 
       await message.reply(`تم حظر ${target.user.tag}.`);
 
-      await sendLog(
+      await log(
         message.guild,
         "حظر عضو",
-        `العضو: ${target.user.tag}\nبواسطة: ${message.author.tag}`
+        `${target.user.tag} بواسطة ${message.author.tag}`
       );
     }
 
-    // -------------------------
+    // =================================
     // KICK
-    // -------------------------
+    // =================================
 
     if (command === "طرد") {
-      if (!isAdmin(message)) return message.reply("ليس لديك صلاحية.");
-
-      const target = getTarget(message);
-
       if (!target) return message.reply("حدد العضو.");
 
-      if (!target.kickable) return message.reply("لا أستطيع طرد هذا العضو.");
+      if (!target.kickable) {
+        return message.reply("لا أستطيع طرد هذا العضو.");
+      }
 
-      await target.kick(args.slice(1).join(" ") || "MAIN SYSTEM");
+      await target.kick("MAIN SYSTEM");
 
       await message.reply(`تم طرد ${target.user.tag}.`);
 
-      await sendLog(
+      await log(
         message.guild,
         "طرد عضو",
         `${target.user.tag} بواسطة ${message.author.tag}`
       );
     }
 
-    // -------------------------
+    // =================================
     // TIMEOUT
-    // -------------------------
+    // =================================
 
     if (command === "اسكات") {
-      if (!isAdmin(message)) return message.reply("ليس لديك صلاحية.");
-
-      const target = getTarget(message);
-
       if (!target) return message.reply("حدد العضو.");
 
-      const minutes = parseAmount(args.slice(1), 10);
+      const minutes = parseInt(args[1], 10) || 10;
 
       if (minutes < 1 || minutes > 40320) {
-        return message.reply("المدة يجب أن تكون من دقيقة إلى 40320 دقيقة.");
+        return message.reply("المدة من 1 إلى 40320 دقيقة.");
       }
 
       if (!target.moderatable) {
@@ -731,37 +952,39 @@ client.on("messageCreate", async message => {
 
       await target.timeout(minutes * 60000, "MAIN SYSTEM");
 
-      await message.reply(`تم إسكات ${target}. المدة: ${minutes} دقيقة.`);
+      await message.reply(
+        `تم إسكات ${target} لمدة ${minutes} دقيقة.`
+      );
+
+      await log(
+        message.guild,
+        "إسكات عضو",
+        `${target.user.tag} لمدة ${minutes} دقيقة.`
+      );
     }
 
-    // -------------------------
+    // =================================
     // UNTIMEOUT
-    // -------------------------
+    // =================================
 
-    if (command === "فك" && args[0] === "اسكات") {
-      if (!isAdmin(message)) return message.reply("ليس لديك صلاحية.");
-
-      const target = getTarget(message);
-
+    if (command === "فكاسكات") {
       if (!target) return message.reply("حدد العضو.");
+
+      if (!target.moderatable) {
+        return message.reply("لا أستطيع فك الإسكات عن هذا العضو.");
+      }
 
       await target.timeout(null);
 
       return message.reply(`تم فك الإسكات عن ${target}.`);
     }
 
-    // -------------------------
+    // =================================
     // WARN
-    // -------------------------
+    // =================================
 
     if (command === "تحذير") {
-      if (!isAdmin(message)) return message.reply("ليس لديك صلاحية.");
-
-      const target = getTarget(message);
-
       if (!target) return message.reply("حدد العضو.");
-
-      const reason = args.slice(1).join(" ") || "بدون سبب";
 
       if (!warnings[message.guild.id]) {
         warnings[message.guild.id] = {};
@@ -771,66 +994,59 @@ client.on("messageCreate", async message => {
         warnings[message.guild.id][target.id] = [];
       }
 
+      const reason = args.slice(1).join(" ") || "بدون سبب";
+
       warnings[message.guild.id][target.id].push({
         reason,
         moderator: message.author.tag,
         date: new Date().toISOString()
       });
 
-      saveDB("./data/warnings.json", warnings);
+      saveDB("warnings.json", warnings);
 
       await message.reply(`تم تحذير ${target}. السبب: ${reason}`);
 
-      await sendLog(
+      await log(
         message.guild,
         "تحذير عضو",
-        `${target}\nالسبب: ${reason}\nبواسطة: ${message.author}`
+        `${target.user.tag}\nالسبب: ${reason}`
       );
     }
 
-    // -------------------------
-    // WARNINGS
-    // -------------------------
+    // =================================
+    // WARNINGS LIST
+    // =================================
 
     if (command === "تحذيراته") {
-      if (!isAdmin(message)) return message.reply("ليس لديك صلاحية.");
-
-      const target = getTarget(message);
-
       if (!target) return message.reply("حدد العضو.");
 
       const list = warnings[message.guild.id]?.[target.id] || [];
 
       if (!list.length) {
-        return message.reply("هذا العضو ليس لديه تحذيرات.");
+        return message.reply("لا توجد تحذيرات.");
       }
 
-      const text = list.map((w, i) =>
-        `**${i + 1}.** ${w.reason} — ${w.moderator}`
+      const text = list.map((item, i) =>
+        `${i + 1}. ${item.reason} — ${item.moderator}`
       ).join("\n");
 
       return message.reply({
-        embeds: [makeEmbed("تحذيرات العضو", text)]
+        embeds: [embed("تحذيرات العضو", text)]
       });
     }
 
-    // -------------------------
-    // CLEAR
-    // -------------------------
+    // =================================
+    // CLEAR MESSAGES
+    // =================================
 
     if (command === "مسح") {
-      if (!isAdmin(message)) return message.reply("ليس لديك صلاحية.");
+      const amount = parseInt(args[0], 10);
 
-      const amount = parseAmount(args, 1);
-
-      if (amount < 1 || amount > 100) {
-        return message.reply("حدد عددًا من 1 إلى 100.");
+      if (!Number.isInteger(amount) || amount < 1 || amount > 100) {
+        return message.reply("اكتب عددًا من 1 إلى 100.");
       }
 
-      const deleted = await message.channel.bulkDelete(
-        amount,
-        true
-      );
+      const deleted = await message.channel.bulkDelete(amount, true);
 
       const reply = await message.channel.send(
         `تم حذف ${deleted.size} رسالة.`
@@ -838,47 +1054,43 @@ client.on("messageCreate", async message => {
 
       setTimeout(() => reply.delete().catch(() => {}), 4000);
 
-      await sendLog(
+      await log(
         message.guild,
-        "تنظيف الرسائل",
+        "تنظيف رسائل",
         `${message.author.tag} حذف ${deleted.size} رسالة.`
       );
     }
 
-    // -------------------------
+    // =================================
     // MEMBER INFO
-    // -------------------------
+    // =================================
 
     if (command === "عضو") {
-      const target = getTarget(message) || message.member;
-
-      const data = getMemberData(target.id, message.guild.id);
+      const member = target || message.member;
+      const data = getData(message.guild.id, member.id);
 
       return message.reply({
         embeds: [
           new EmbedBuilder()
-            .setColor(CONFIG.color)
+            .setColor(COLOR)
             .setTitle("معلومات العضو")
-            .setThumbnail(target.user.displayAvatarURL())
+            .setThumbnail(member.user.displayAvatarURL())
             .addFields(
-              { name: "الاسم", value: target.user.tag },
-              { name: "المعرف", value: target.id },
+              { name: "الاسم", value: member.user.tag },
+              { name: "ID", value: member.id },
               { name: "المستوى", value: String(data.level), inline: true },
               { name: "XP", value: String(data.xp), inline: true },
-              { name: "الرسائل", value: String(data.messages), inline: true },
-              {
-                name: "تاريخ الانضمام",
-                value: `<t:${Math.floor(target.joinedTimestamp / 1000)}:R>`
-              }
+              { name: "الرسائل", value: String(data.messages), inline: true }
             )
+            .setTimestamp()
             .setFooter({ text: "MAIN SYSTEM" })
         ]
       });
     }
 
-    // -------------------------
+    // =================================
     // SERVER INFO
-    // -------------------------
+    // =================================
 
     if (command === "سيرفر") {
       const guild = message.guild;
@@ -886,36 +1098,31 @@ client.on("messageCreate", async message => {
       return message.reply({
         embeds: [
           new EmbedBuilder()
-            .setColor(CONFIG.color)
+            .setColor(COLOR)
             .setTitle(guild.name)
             .setThumbnail(guild.iconURL())
             .addFields(
               { name: "الأعضاء", value: String(guild.memberCount), inline: true },
               { name: "الرومات", value: String(guild.channels.cache.size), inline: true },
-              { name: "الرتب", value: String(guild.roles.cache.size), inline: true },
-              {
-                name: "تاريخ الإنشاء",
-                value: `<t:${Math.floor(guild.createdTimestamp / 1000)}:D>`
-              }
+              { name: "الرتب", value: String(guild.roles.cache.size), inline: true }
             )
+            .setTimestamp()
             .setFooter({ text: "MAIN SYSTEM" })
         ]
       });
     }
 
-    // -------------------------
+    // =================================
     // AVATAR
-    // -------------------------
+    // =================================
 
     if (command === "صورة") {
-      const target = getTarget(message);
-
       const user = target ? target.user : message.author;
 
       return message.reply({
         embeds: [
           new EmbedBuilder()
-            .setColor(CONFIG.color)
+            .setColor(COLOR)
             .setTitle(`صورة ${user.username}`)
             .setImage(user.displayAvatarURL({
               size: 1024,
@@ -925,46 +1132,48 @@ client.on("messageCreate", async message => {
       });
     }
 
-    // -------------------------
+    // =================================
     // ANNOUNCEMENT
-    // -------------------------
+    // =================================
 
     if (command === "اعلان") {
-      if (!isAdmin(message)) return message.reply("ليس لديك صلاحية.");
+      const text = args.join(" ");
 
-      const announcement = args.join(" ");
-
-      if (!announcement) return message.reply("اكتب نص الإعلان.");
+      if (!text) return message.reply("اكتب نص الإعلان.");
 
       await message.channel.send({
         content: "@everyone",
         allowedMentions: { parse: ["everyone"] },
-        embeds: [
-          makeEmbed("إعلان الإدارة", announcement)
-        ]
+        embeds: [embed("إعلان الإدارة", text)]
       });
 
       await message.reply("تم إرسال الإعلان.");
+
+      await log(
+        message.guild,
+        "إعلان جماعي",
+        `بواسطة ${message.author.tag}`
+      );
     }
 
   } catch (error) {
-    console.error("Command Error:", error);
+    console.error("COMMAND ERROR:", error);
 
     await message.reply(
-      "حدث خطأ أثناء تنفيذ الأمر. تأكد من صلاحيات البوت."
+      "حدث خطأ. تأكد من صلاحيات البوت وإعداداته."
     ).catch(() => {});
   }
 });
 
-// =============================
-// READY
-// =============================
+// =====================================
+// BOT READY
+// =====================================
 
 client.once("ready", () => {
-  console.log("================================");
-  console.log("MAIN SYSTEM IS ONLINE");
-  console.log(`Logged in as ${client.user.tag}`);
-  console.log("================================");
+  console.log("--------------------------------");
+  console.log("MAIN SYSTEM ONLINE");
+  console.log(`Bot: ${client.user.tag}`);
+  console.log("--------------------------------");
 
   client.user.setPresence({
     activities: [
@@ -974,30 +1183,23 @@ client.once("ready", () => {
   });
 });
 
-// =============================
+// =====================================
 // ERROR HANDLING
-// =============================
+// =====================================
 
-client.on("error", error => {
-  console.error("Discord Error:", error);
-});
+client.on("error", console.error);
 
 process.on("unhandledRejection", error => {
   console.error("Unhandled Rejection:", error);
 });
 
-// =============================
+// =====================================
 // LOGIN
-// =============================
+// =====================================
 
 if (!TOKEN) {
-  console.error("ERROR: TOKEN is missing!");
+  console.error("TOKEN is missing!");
   process.exit(1);
 }
 
 client.login(TOKEN);
-
-client.login(TOKEN).catch(error => {
-  console.error('فشل تسجيل الدخول:', error.message);
-  process.exit(1);
-});
