@@ -201,7 +201,9 @@ const commands = [
   "رتبة_مستوى",
   "رتبة_تفاعل",
   "موثوق",
-  "الغاء_موثوق"
+  "الغاء_موثوق",
+  "قفل",
+  "فتح"
 ];
 
 function resolveCommand(input, config) {
@@ -589,11 +591,70 @@ client.on("messageCreate", async message => {
       "مغادرة", "رسالة_ترحيب", "رسالة_مغادرة",
       "رتبة_تلقائية", "الغاء_رتبة_تلقائية",
       "اعطاء", "سحب", "رتبة_مستوى",
-      "رتبة_تفاعل", "موثوق", "الغاء_موثوق"
+      "رتبة_تفاعل", "موثوق", "الغاء_موثوق",
+      "قفل", "فتح"
     ];
 
     if (adminCommands.includes(command) && !isAdmin(message)) {
       return message.reply("ليس لديك صلاحية Administrator.");
+    }
+
+    // =====================================
+    // LOCK ROOM
+    // =====================================
+
+    if (command === "قفل") {
+      if (
+        !message.channel.permissionOverwrites ||
+        typeof message.channel.permissionOverwrites.edit !== "function"
+      ) {
+        return message.reply("لا يمكن قفل هذا النوع من الرومات.");
+      }
+
+      await message.channel.permissionOverwrites.edit(
+        message.guild.roles.everyone,
+        { SendMessages: false },
+        { reason: `Locked by ${message.author.tag}` }
+      );
+
+      await message.reply("🔒 تم قفل الروم بنجاح.");
+
+      await log(
+        message.guild,
+        "قفل روم",
+        `**الروم:** ${message.channel}\n**بواسطة:** ${message.author.tag}`
+      );
+
+      return;
+    }
+
+    // =====================================
+    // UNLOCK ROOM
+    // =====================================
+
+    if (command === "فتح") {
+      if (
+        !message.channel.permissionOverwrites ||
+        typeof message.channel.permissionOverwrites.edit !== "function"
+      ) {
+        return message.reply("لا يمكن فتح هذا النوع من الرومات.");
+      }
+
+      await message.channel.permissionOverwrites.edit(
+        message.guild.roles.everyone,
+        { SendMessages: true },
+        { reason: `Unlocked by ${message.author.tag}` }
+      );
+
+      await message.reply("🔓 تم فتح الروم بنجاح.");
+
+      await log(
+        message.guild,
+        "فتح روم",
+        `**الروم:** ${message.channel}\n**بواسطة:** ${message.author.tag}`
+      );
+
+      return;
     }
 
     // HELP
