@@ -1,3 +1,4 @@
+
 const {
   Client,
   GatewayIntentBits,
@@ -15,8 +16,6 @@ const path = require("path");
 // =====================================
 
 const TOKEN = process.env.TOKEN;
-
-const PREFIX = ""; // بدون بادئة
 const COLOR = 0xFFFFFF;
 
 const client = new Client({
@@ -38,10 +37,10 @@ const client = new Client({
 // DATABASE
 // =====================================
 
-const folder = "./data";
+const folder = path.join(__dirname, "data");
 
 if (!fs.existsSync(folder)) {
-  fs.mkdirSync(folder);
+  fs.mkdirSync(folder, { recursive: true });
 }
 
 function readDB(name, fallback = {}) {
@@ -73,23 +72,31 @@ let warnings = readDB("warnings.json");
 
 function getSettings(guildId) {
   if (!settings[guildId]) {
-    settings[guildId] = {
-      logChannel: null,
-      welcomeChannel: null,
-      leaveChannel: null,
-      welcomeMessage: "أهلًا {user} نورت سيرفر {server}!",
-      leaveMessage: "{username} غادر السيرفر.",
-      autoRole: null,
-      levelRoles: [],
-      activityRoles: [],
-      aliases: {},
-      trusted: [],
-      antiNuke: true,
-      antiSpam: true
-    };
-
-    saveDB("settings.json", settings);
+    settings[guildId] = {};
   }
+
+  const defaults = {
+    logChannel: null,
+    welcomeChannel: null,
+    leaveChannel: null,
+    welcomeMessage: "أهلًا {user} نورت سيرفر {server}!",
+    leaveMessage: "{username} غادر السيرفر.",
+    autoRole: null,
+    levelRoles: [],
+    activityRoles: [],
+    aliases: {},
+    trusted: [],
+    antiNuke: true,
+    antiSpam: true
+  };
+
+  for (const [key, value] of Object.entries(defaults)) {
+    if (settings[guildId][key] === undefined) {
+      settings[guildId][key] = value;
+    }
+  }
+
+  saveDB("settings.json", settings);
 
   return settings[guildId];
 }
@@ -188,6 +195,9 @@ const commands = [
   "رسالة_ترحيب",
   "رسالة_مغادرة",
   "رتبة_تلقائية",
+  "الغاء_رتبة_تلقائية",
+  "اعطاء",
+  "سحب",
   "رتبة_مستوى",
   "رتبة_تفاعل",
   "موثوق",
@@ -209,7 +219,7 @@ function commandName(original, config) {
 }
 
 // =====================================
-// XP AND LEVEL SYSTEM
+// XP SYSTEM
 // =====================================
 
 const xpCooldown = new Map();
@@ -242,8 +252,6 @@ async function giveXP(message) {
         )
       ]
     }).catch(() => {});
-
-    await checkRoles(message.member);
   }
 
   await checkRoles(message.member);
@@ -259,7 +267,7 @@ async function checkRoles(member) {
     if (data.level >= item.level) {
       const role = member.guild.roles.cache.get(item.role);
 
-      if (role && !member.roles.cache.has(role.id)) {
+      if (role && role.editable && !member.roles.cache.has(role.id)) {
         await member.roles.add(role).catch(() => {});
       }
     }
@@ -269,7 +277,7 @@ async function checkRoles(member) {
     if (data.messages >= item.messages) {
       const role = member.guild.roles.cache.get(item.role);
 
-      if (role && !member.roles.cache.has(role.id)) {
+      if (role && role.editable && !member.roles.cache.has(role.id)) {
         await member.roles.add(role).catch(() => {});
       }
     }
@@ -277,7 +285,7 @@ async function checkRoles(member) {
 }
 
 // =====================================
-// AUTO SPAM PROTECTION
+// ANTI SPAM
 // =====================================
 
 async function checkSpam(message) {
@@ -289,10 +297,9 @@ async function checkSpam(message) {
   const now = Date.now();
 
   const times = spamMessages.get(key) || [];
-
   const recent = times.filter(time => now - time < 5000);
-  recent.push(now);
 
+  recent.push(now);
   spamMessages.set(key, recent);
 
   if (recent.length < 5) return false;
@@ -322,18 +329,19 @@ async function checkSpam(message) {
 }
 
 // =====================================
-// WELCOME AND LEAVE
+// WELCOME AND AUTO ROLE
 // =====================================
 
 client.on("guildMemberAdd", async member => {
   const config = getSettings(member.guild.id);
 
+  // Welcome message
   if (config.welcomeChannel) {
     const channel = member.guild.channels.cache.get(
       config.welcomeChannel
     );
 
-    if (channel) {
+    if (channel && channel.isTextBased()) {
       const text = config.welcomeMessage
         .replaceAll("{user}", member.toString())
         .replaceAll("{server}", member.guild.name)
@@ -345,11 +353,22 @@ client.on("guildMemberAdd", async member => {
     }
   }
 
+  // Automatic role for new members
   if (config.autoRole) {
     const role = member.guild.roles.cache.get(config.autoRole);
 
-    if (role) {
-      await member.roles.add(role).catch(() => {});
+    if (role && role.editable) {
+      await member.roles.add(role, "MAIN SYSTEM Auto Role")
+        .then(() => {
+          log(
+            member.guild,
+            "رتبة تلقائية",
+            `تم إعطاء ${member.user.tag} الرتبة ${role.name}`
+          );
+        })
+        .catch(error => {
+          console.error("Auto Role Error:", error);
+        });
     }
   }
 
@@ -360,6 +379,10 @@ client.on("guildMemberAdd", async member => {
   );
 });
 
+// =====================================
+// LEAVE
+// =====================================
+
 client.on("guildMemberRemove", async member => {
   const config = getSettings(member.guild.id);
 
@@ -368,7 +391,7 @@ client.on("guildMemberRemove", async member => {
       config.leaveChannel
     );
 
-    if (channel) {
+    if (channel && channel.isTextBased()) {
       const text = config.leaveMessage
         .replaceAll("{username}", member.user.username)
         .replaceAll("{server}", member.guild.name);
@@ -417,7 +440,7 @@ client.on("messageUpdate", async (oldMessage, newMessage) => {
 });
 
 // =====================================
-// ROLE AND CHANNEL LOGS
+// CHANNEL AND ROLE LOGS
 // =====================================
 
 client.on("channelCreate", channel => {
@@ -557,13 +580,15 @@ client.on("messageCreate", async message => {
     if (!command) return;
 
     const args = parts;
+    const target = mentionMember(message);
 
     const adminCommands = [
       "حظر", "طرد", "اسكات", "فكاسكات",
       "تحذير", "تحذيراته", "مسح", "اعلان",
       "تغيير", "استرجاع", "لوق", "ترحيب",
       "مغادرة", "رسالة_ترحيب", "رسالة_مغادرة",
-      "رتبة_تلقائية", "رتبة_مستوى",
+      "رتبة_تلقائية", "الغاء_رتبة_تلقائية",
+      "اعطاء", "سحب", "رتبة_مستوى",
       "رتبة_تفاعل", "موثوق", "الغاء_موثوق"
     ];
 
@@ -571,28 +596,18 @@ client.on("messageCreate", async message => {
       return message.reply("ليس لديك صلاحية Administrator.");
     }
 
-    const target = mentionMember(message);
-
-    // =================================
     // HELP
-    // =================================
-
     if (command === "مساعدة") {
       const list = commands.map(name =>
         `\`${commandName(name, config)}\``
       ).join(" • ");
 
       return message.reply({
-        embeds: [
-          embed("MAIN SYSTEM COMMANDS", list)
-        ]
+        embeds: [embed("MAIN SYSTEM COMMANDS", list)]
       });
     }
 
-    // =================================
     // TOP
-    // =================================
-
     if (command === "توب") {
       const data = levels[message.guild.id] || {};
 
@@ -604,7 +619,9 @@ client.on("messageCreate", async message => {
         })
         .slice(0, 10);
 
-      if (!top.length) return message.reply("لا توجد بيانات حتى الآن.");
+      if (!top.length) {
+        return message.reply("لا توجد بيانات حتى الآن.");
+      }
 
       const lines = [];
 
@@ -622,10 +639,7 @@ client.on("messageCreate", async message => {
       });
     }
 
-    // =================================
     // MY LEVEL
-    // =================================
-
     if (command === "رتبتي") {
       const data = getData(message.guild.id, message.author.id);
 
@@ -639,23 +653,17 @@ client.on("messageCreate", async message => {
       });
     }
 
-    // =================================
     // CHANGE COMMAND NAME
-    // =================================
-
     if (command === "تغيير") {
-      const oldName = args[0];
-      const newName = args[1];
+      const oldName = args[1] === "امر" ? args[2] : args[0];
+      const newName = args[1] === "امر" ? args[3] : args[1];
 
       if (!oldName || !newName) {
-        return message.reply(
-          "الاستخدام: تغيير امر توب متصدرين"
-        );
+        return message.reply("الاستخدام: تغيير امر توب متصدرين");
       }
 
       const original = commands.find(name =>
-        name === oldName ||
-        config.aliases[name] === oldName
+        name === oldName || config.aliases[name] === oldName
       );
 
       if (!original) {
@@ -682,22 +690,20 @@ client.on("messageCreate", async message => {
         "تغيير اسم أمر",
         `${message.author.tag}: ${oldName} → ${newName}`
       );
+
+      return;
     }
 
-    // =================================
     // RESET COMMAND NAME
-    // =================================
-
     if (command === "استرجاع") {
-      const oldName = args[0];
+      const oldName = args[1] === "امر" ? args[2] : args[0];
 
       if (!oldName) {
         return message.reply("الاستخدام: استرجاع امر توب");
       }
 
       const original = commands.find(name =>
-        name === oldName ||
-        config.aliases[name] === oldName
+        name === oldName || config.aliases[name] === oldName
       );
 
       if (!original || !config.aliases[original]) {
@@ -705,18 +711,12 @@ client.on("messageCreate", async message => {
       }
 
       delete config.aliases[original];
-
       saveDB("settings.json", settings);
 
-      return message.reply(
-        `تم استرجاع الأمر إلى **${original}**.`
-      );
+      return message.reply(`تم استرجاع الأمر إلى **${original}**.`);
     }
 
-    // =================================
     // LOG CHANNEL
-    // =================================
-
     if (command === "لوق") {
       const channel = message.mentions.channels.first();
 
@@ -728,10 +728,7 @@ client.on("messageCreate", async message => {
       return message.reply(`تم تحديد روم اللوق: ${channel}`);
     }
 
-    // =================================
     // WELCOME CHANNEL
-    // =================================
-
     if (command === "ترحيب") {
       const channel = message.mentions.channels.first();
 
@@ -743,10 +740,7 @@ client.on("messageCreate", async message => {
       return message.reply(`تم تحديد روم الترحيب: ${channel}`);
     }
 
-    // =================================
     // LEAVE CHANNEL
-    // =================================
-
     if (command === "مغادرة") {
       const channel = message.mentions.channels.first();
 
@@ -758,10 +752,7 @@ client.on("messageCreate", async message => {
       return message.reply(`تم تحديد روم المغادرة: ${channel}`);
     }
 
-    // =================================
     // WELCOME MESSAGE
-    // =================================
-
     if (command === "رسالة_ترحيب") {
       const text = args.join(" ");
 
@@ -773,10 +764,7 @@ client.on("messageCreate", async message => {
       return message.reply("تم تغيير رسالة الترحيب.");
     }
 
-    // =================================
     // LEAVE MESSAGE
-    // =================================
-
     if (command === "رسالة_مغادرة") {
       const text = args.join(" ");
 
@@ -788,31 +776,119 @@ client.on("messageCreate", async message => {
       return message.reply("تم تغيير رسالة المغادرة.");
     }
 
-    // =================================
     // AUTO ROLE
-    // =================================
-
     if (command === "رتبة_تلقائية") {
       const role = mentionRole(message);
 
-      if (!role) return message.reply("حدد الرتبة.");
+      if (!role) {
+        return message.reply("الاستخدام: رتبة_تلقائية @الرتبة");
+      }
+
+      if (!role.editable) {
+        return message.reply(
+          "لا أستطيع إعطاء هذه الرتبة. ارفع رتبة البوت فوقها."
+        );
+      }
 
       config.autoRole = role.id;
       saveDB("settings.json", settings);
 
-      return message.reply(`تم تحديد الرتبة التلقائية: ${role}`);
+      return message.reply(
+        `تم تحديد الرتبة التلقائية: ${role}\nسيحصل عليها كل عضو جديد يدخل السيرفر.`
+      );
     }
 
-    // =================================
-    // LEVEL ROLE
-    // =================================
+    // DISABLE AUTO ROLE
+    if (command === "الغاء_رتبة_تلقائية") {
+      if (!config.autoRole) {
+        return message.reply("لا توجد رتبة تلقائية محددة.");
+      }
 
+      config.autoRole = null;
+      saveDB("settings.json", settings);
+
+      return message.reply("تم إلغاء الرتبة التلقائية.");
+    }
+
+    // GIVE ROLE
+    if (command === "اعطاء") {
+      const role = mentionRole(message);
+
+      if (!target || !role) {
+        return message.reply("الاستخدام: اعطاء @العضو @الرتبة");
+      }
+
+      if (!target.manageable || !role.editable) {
+        return message.reply(
+          "لا أستطيع إعطاء هذه الرتبة. تأكد من ترتيب الرتب وصلاحيات البوت."
+        );
+      }
+
+      if (target.roles.cache.has(role.id)) {
+        return message.reply("العضو يمتلك هذه الرتبة بالفعل.");
+      }
+
+      await target.roles.add(
+        role,
+        `MAIN SYSTEM بواسطة ${message.author.tag}`
+      );
+
+      await message.reply(`تم إعطاء ${target} الرتبة ${role}.`);
+
+      await log(
+        message.guild,
+        "إعطاء رتبة",
+        `**العضو:** ${target.user.tag}\n**الرتبة:** ${role.name}\n**بواسطة:** ${message.author.tag}`
+      );
+
+      return;
+    }
+
+    // REMOVE ROLE
+    if (command === "سحب") {
+      const role = mentionRole(message);
+
+      if (!target || !role) {
+        return message.reply("الاستخدام: سحب @العضو @الرتبة");
+      }
+
+      if (!target.manageable || !role.editable) {
+        return message.reply(
+          "لا أستطيع سحب هذه الرتبة. تأكد من ترتيب الرتب وصلاحيات البوت."
+        );
+      }
+
+      if (!target.roles.cache.has(role.id)) {
+        return message.reply("العضو لا يمتلك هذه الرتبة.");
+      }
+
+      await target.roles.remove(
+        role,
+        `MAIN SYSTEM بواسطة ${message.author.tag}`
+      );
+
+      await message.reply(`تم سحب الرتبة ${role} من ${target}.`);
+
+      await log(
+        message.guild,
+        "سحب رتبة",
+        `**العضو:** ${target.user.tag}\n**الرتبة:** ${role.name}\n**بواسطة:** ${message.author.tag}`
+      );
+
+      return;
+    }
+
+    // LEVEL ROLE
     if (command === "رتبة_مستوى") {
       const level = parseInt(args[0], 10);
       const role = mentionRole(message);
 
       if (!Number.isInteger(level) || level < 1 || !role) {
         return message.reply("الاستخدام: رتبة_مستوى 5 @رتبة");
+      }
+
+      if (!role.editable) {
+        return message.reply("رتبة البوت يجب أن تكون أعلى من الرتبة المطلوبة.");
       }
 
       config.levelRoles = config.levelRoles.filter(
@@ -831,16 +907,17 @@ client.on("messageCreate", async message => {
       );
     }
 
-    // =================================
     // ACTIVITY ROLE
-    // =================================
-
     if (command === "رتبة_تفاعل") {
       const amount = parseInt(args[0], 10);
       const role = mentionRole(message);
 
       if (!Number.isInteger(amount) || amount < 1 || !role) {
         return message.reply("الاستخدام: رتبة_تفاعل 100 @رتبة");
+      }
+
+      if (!role.editable) {
+        return message.reply("رتبة البوت يجب أن تكون أعلى من الرتبة المطلوبة.");
       }
 
       config.activityRoles = config.activityRoles.filter(
@@ -859,10 +936,7 @@ client.on("messageCreate", async message => {
       );
     }
 
-    // =================================
     // TRUSTED USERS
-    // =================================
-
     if (command === "موثوق") {
       if (!target) return message.reply("حدد العضو.");
 
@@ -887,10 +961,7 @@ client.on("messageCreate", async message => {
       return message.reply(`تم إزالة ${target} من قائمة الموثوقين.`);
     }
 
-    // =================================
     // BAN
-    // =================================
-
     if (command === "حظر") {
       if (!target) return message.reply("حدد العضو.");
 
@@ -898,23 +969,22 @@ client.on("messageCreate", async message => {
         return message.reply("لا أستطيع حظر هذا العضو.");
       }
 
-      await target.ban({
-        reason: args.filter(a => !a.startsWith("<@")).join(" ") || "MAIN SYSTEM"
-      });
+      const reason = args.filter(a => !a.startsWith("<@")).join(" ") || "MAIN SYSTEM";
+
+      await target.ban({ reason });
 
       await message.reply(`تم حظر ${target.user.tag}.`);
 
       await log(
         message.guild,
         "حظر عضو",
-        `${target.user.tag} بواسطة ${message.author.tag}`
+        `${target.user.tag} بواسطة ${message.author.tag}\nالسبب: ${reason}`
       );
+
+      return;
     }
 
-    // =================================
     // KICK
-    // =================================
-
     if (command === "طرد") {
       if (!target) return message.reply("حدد العضو.");
 
@@ -931,12 +1001,11 @@ client.on("messageCreate", async message => {
         "طرد عضو",
         `${target.user.tag} بواسطة ${message.author.tag}`
       );
+
+      return;
     }
 
-    // =================================
     // TIMEOUT
-    // =================================
-
     if (command === "اسكات") {
       if (!target) return message.reply("حدد العضو.");
 
@@ -961,12 +1030,11 @@ client.on("messageCreate", async message => {
         "إسكات عضو",
         `${target.user.tag} لمدة ${minutes} دقيقة.`
       );
+
+      return;
     }
 
-    // =================================
     // UNTIMEOUT
-    // =================================
-
     if (command === "فكاسكات") {
       if (!target) return message.reply("حدد العضو.");
 
@@ -979,10 +1047,7 @@ client.on("messageCreate", async message => {
       return message.reply(`تم فك الإسكات عن ${target}.`);
     }
 
-    // =================================
     // WARN
-    // =================================
-
     if (command === "تحذير") {
       if (!target) return message.reply("حدد العضو.");
 
@@ -1011,12 +1076,11 @@ client.on("messageCreate", async message => {
         "تحذير عضو",
         `${target.user.tag}\nالسبب: ${reason}`
       );
+
+      return;
     }
 
-    // =================================
     // WARNINGS LIST
-    // =================================
-
     if (command === "تحذيراته") {
       if (!target) return message.reply("حدد العضو.");
 
@@ -1035,10 +1099,7 @@ client.on("messageCreate", async message => {
       });
     }
 
-    // =================================
     // CLEAR MESSAGES
-    // =================================
-
     if (command === "مسح") {
       const amount = parseInt(args[0], 10);
 
@@ -1059,12 +1120,11 @@ client.on("messageCreate", async message => {
         "تنظيف رسائل",
         `${message.author.tag} حذف ${deleted.size} رسالة.`
       );
+
+      return;
     }
 
-    // =================================
     // MEMBER INFO
-    // =================================
-
     if (command === "عضو") {
       const member = target || message.member;
       const data = getData(message.guild.id, member.id);
@@ -1088,10 +1148,7 @@ client.on("messageCreate", async message => {
       });
     }
 
-    // =================================
     // SERVER INFO
-    // =================================
-
     if (command === "سيرفر") {
       const guild = message.guild;
 
@@ -1112,10 +1169,7 @@ client.on("messageCreate", async message => {
       });
     }
 
-    // =================================
     // AVATAR
-    // =================================
-
     if (command === "صورة") {
       const user = target ? target.user : message.author;
 
@@ -1132,10 +1186,7 @@ client.on("messageCreate", async message => {
       });
     }
 
-    // =================================
     // ANNOUNCEMENT
-    // =================================
-
     if (command === "اعلان") {
       const text = args.join(" ");
 
@@ -1154,6 +1205,8 @@ client.on("messageCreate", async message => {
         "إعلان جماعي",
         `بواسطة ${message.author.tag}`
       );
+
+      return;
     }
 
   } catch (error) {
